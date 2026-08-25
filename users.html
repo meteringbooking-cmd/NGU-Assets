@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Users · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+</head>
+<body>
+<script>
+  if (location.protocol === "file:") {
+    document.addEventListener("DOMContentLoaded", function () {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 16px;font:600 13px -apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;";
+      b.textContent = "This app must be opened through a local web server, not by double-clicking the file. Double-click start-local-server.bat in this folder, then open the page it launches. See README.md for details.";
+      document.body.insertBefore(b, document.body.firstChild);
+    });
+  }
+</script>
+<div id="page-content">
+  <div class="card card-pad" style="margin-bottom:20px; max-width:760px;">
+    <div class="section-title">Users</div>
+    <p class="muted">
+      Everyone who confirms an asset action (allocating, transferring, returning, calibrating, repairing,
+      reporting an incident, recovering, recharging, or retiring an asset) does so by entering their PIN here.
+      The PIN is matched against this list, and the matching name is what gets recorded on the audit trail.
+      This page itself is <strong>not</strong> PIN-gated, since it's where PINs are set up in the first place —
+      keep it somewhere you're comfortable anyone with access to this app can reach.
+    </p>
+  </div>
+
+  <div class="page-toolbar">
+    <input type="search" class="search-input" id="search-input" placeholder="Search users…" />
+    <button class="btn btn-primary" id="add-btn">+ Add User</button>
+  </div>
+
+  <div class="card">
+    <table class="data-table">
+      <thead>
+        <tr><th>ID</th><th>Name</th><th>PIN</th><th>Status</th><th>Created</th></tr>
+      </thead>
+      <tbody id="rows"><tr class="loading-row"><td colspan="5">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+  import { db } from "./shared/firebase-config.js";
+  import { COLLECTIONS } from "./shared/collections.js";
+  import { initLayout, el, $, toast, debounce, nextId, fetchAll, openModal, closeModal, nowISO, formatDate, invalidateUsersCache } from "./shared/common.js";
+  import { doc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  initLayout("users", "Users");
+
+  let allUsers = [];
+
+  async function load() {
+    document.getElementById("rows").innerHTML = `<tr class="loading-row"><td colspan="5">Loading…</td></tr>`;
+    allUsers = await fetchAll(COLLECTIONS.USERS);
+    allUsers.sort((a, b) => (a.Name || "").localeCompare(b.Name || ""));
+    render();
+  }
+
+  function render() {
+    const tbody = document.getElementById("rows");
+    const term = ($("#search-input").value || "").toLowerCase();
+    tbody.innerHTML = "";
+    const rows = allUsers.filter((u) => !term || (u.Name || "").toLowerCase().includes(term));
+    if (rows.length === 0) {
+      tbody.appendChild(
+        el("tr", { class: "static-row" }, el("td", { colspan: "5", class: "empty-state" }, "No users yet — add the first one to start requiring PIN confirmation."))
+      );
+      return;
+    }
+    rows.forEach((u) => {
+      tbody.appendChild(
+        el("tr", { onclick: () => openForm(u) }, [
+          el("td", {}, u.id),
+          el("td", {}, u.Name || "—"),
+          el("td", {}, "• • • •"),
+          el("td", {}, el("span", { class: `badge ${u.Active === false ? "badge-slate" : "badge-green"}` }, u.Active === false ? "Inactive" : "Active")),
+          el("td", {}, formatDate(u.CreatedDate)),
+        ])
+      );
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", debounce(render, 150));
+  document.getElementById("add-btn").addEventListener("click", () => openForm(null));
+
+  function openForm(existing) {
+    const form = el("form", { class: "field-grid" });
+    form.innerHTML = `
+      <div class="field"><label>Name *</label><input name="Name" required maxlength="100" placeholder="e.g. Craig Steel" /></div>
+      <div class="field">
+        <label>4-Digit PIN *</label>
+        <input name="Pin" required maxlength="4" pattern="[0-9]{4}" inputmode="numeric" placeholder="e.g. 4821" style="letter-spacing:6px;" />
+        <span class="hint">Exactly 4 digits. Must be unique among active users.</span>
+      </div>
+      <div class="field checkbox-row"><input type="checkbox" name="Active" id="chk-active" /><label for="chk-active">Active</label></div>
+      <div class="field-error" id="form-error" style="grid-column:1/-1;"></div>
+
+      <div class="form-actions" style="grid-column:1/-1;">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">${existing ? "Save Changes" : "Add User"}</button>
+      </div>
+    `;
+
+    if (existing) {
+      form.querySelector('[name="Name"]').value = existing.Name || "";
+      form.querySelector('[name="Pin"]').value = existing.Pin || "";
+      form.querySelector('[name="Active"]').checked = existing.Active !== false;
+    } else {
+      form.querySelector('[name="Active"]').checked = true;
+    }
+
+    const panel = openModal(existing ? `Edit User — ${existing.Name}` : "Add User", form);
+    panel.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const errorHost = form.querySelector("#form-error");
+      errorHost.textContent = "";
+
+      const name = (fd.get("Name") || "").trim();
+      const pin = (fd.get("Pin") || "").trim();
+      const active = form.querySelector('[name="Active"]').checked;
+
+      if (!/^\d{4}$/.test(pin)) {
+        errorHost.textContent = "PIN must be exactly 4 digits.";
+        return;
+      }
+      const clash = allUsers.find(
+        (u) => u.id !== (existing && existing.id) && u.Active !== false && active && String(u.Pin) === pin
+      );
+      if (clash) {
+        errorHost.textContent = `That PIN is already in use by ${clash.Name}. Choose a different one.`;
+        return;
+      }
+
+      const data = { Name: name, Pin: pin, Active: active };
+      try {
+        if (existing) {
+          await updateDoc(doc(db, COLLECTIONS.USERS, existing.id), data);
+          toast("User updated", "success");
+        } else {
+          const id = await nextId("USR", 3);
+          data.CreatedDate = nowISO();
+          await setDoc(doc(db, COLLECTIONS.USERS, id), data);
+          toast("User added", "success");
+        }
+        invalidateUsersCache();
+        closeModal();
+        load();
+      } catch (err) {
+        errorHost.textContent = "Could not save: " + err.message;
+      }
+    });
+  }
+
+  load();
+</script>
+</body>
+</html>

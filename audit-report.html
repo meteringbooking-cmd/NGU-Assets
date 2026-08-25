@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Audit Report · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+</head>
+<body>
+<script>
+  if (location.protocol === "file:") {
+    document.addEventListener("DOMContentLoaded", function () {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 16px;font:600 13px -apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;";
+      b.textContent = "This app must be opened through a local web server, not by double-clicking the file. Double-click start-local-server.bat in this folder, then open the page it launches. See README.md for details.";
+      document.body.insertBefore(b, document.body.firstChild);
+    });
+  }
+</script>
+<div id="page-content">
+  <div class="card card-pad" style="max-width:820px;">
+    <div class="section-title">Audit Report</div>
+    <p class="muted" style="margin-bottom:14px;">Look up the full PIN-confirmed audit history for a single asset or a single employee.</p>
+    <div class="pill-toggle" id="mode-toggle">
+      <button type="button" data-mode="asset" class="active">By Asset</button>
+      <button type="button" data-mode="employee">By Employee</button>
+    </div>
+
+    <div style="margin-top:16px; position:relative; max-width:480px;">
+      <input type="text" id="search-input" placeholder="Search asset name, Asset ID or QR Code…" style="width:100%; border:1px solid var(--steel-300); border-radius:6px; padding:9px 10px; font-size:14px;" />
+      <div id="search-results" class="search-dropdown" style="display:none;"></div>
+    </div>
+
+    <div id="selected-summary" class="muted" style="margin-top:12px; display:none;"></div>
+  </div>
+
+  <div class="card card-pad" id="history-card" style="margin-top:20px; display:none;">
+    <div class="section-title" id="history-title">Audit History</div>
+    <table class="data-table">
+      <thead><tr><th>Date</th><th>Time</th><th>Name</th><th>What Happened</th></tr></thead>
+      <tbody id="history-rows"></tbody>
+    </table>
+    <div class="empty-state" id="history-empty" style="display:none;">No audit history recorded for this yet.</div>
+  </div>
+</div>
+
+<script type="module">
+  import { COLLECTIONS } from "./shared/collections.js";
+  import { initLayout, el, $, toast, fetchAll, debounce } from "./shared/common.js";
+
+  initLayout("audit-report", "Audit Report");
+
+  let mode = "asset"; // "asset" | "employee"
+  let assets = [];
+  let employees = [];
+  let auditLog = [];
+  let selected = null; // the chosen asset or employee record
+
+  async function init() {
+    [assets, employees, auditLog] = await Promise.all([
+      fetchAll(COLLECTIONS.ASSET_REGISTER),
+      fetchAll(COLLECTIONS.EMPLOYEE_REGISTER),
+      fetchAll(COLLECTIONS.AUDIT_LOG),
+    ]);
+  }
+
+  function formatDateOnly(value) {
+    if (!value) return "";
+    const d = new Date(value);
+    if (isNaN(d)) return String(value);
+    return d.toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" });
+  }
+  function formatTimeOnly(value) {
+    if (!value) return "";
+    const d = new Date(value);
+    if (isNaN(d)) return "";
+    return d.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" });
+  }
+
+  document.getElementById("mode-toggle").addEventListener("click", (e) => {
+    const btn = e.target.closest("button[data-mode]");
+    if (!btn) return;
+    mode = btn.dataset.mode;
+    document.querySelectorAll("#mode-toggle button").forEach((b) => b.classList.toggle("active", b === btn));
+    selected = null;
+    document.getElementById("search-input").value = "";
+    document.getElementById("search-input").placeholder =
+      mode === "asset" ? "Search asset name, Asset ID or QR Code…" : "Search employee name…";
+    document.getElementById("selected-summary").style.display = "none";
+    document.getElementById("history-card").style.display = "none";
+    renderResults("");
+  });
+
+  function renderResults(term) {
+    const host = document.getElementById("search-results");
+    host.innerHTML = "";
+    if (!term) {
+      host.style.display = "none";
+      return;
+    }
+    const t = term.toLowerCase();
+    let matches = [];
+    if (mode === "asset") {
+      matches = assets
+        .filter((a) => [a.AssetName, a.id, a.QRCode, a.SerialNumber].filter(Boolean).some((v) => String(v).toLowerCase().includes(t)))
+        .slice(0, 12);
+    } else {
+      matches = employees
+        .filter((emp) => (emp.FullName || `${emp.FirstName || ""} ${emp.LastName || ""}`).toLowerCase().includes(t))
+        .slice(0, 12);
+    }
+    if (matches.length === 0) {
+      host.appendChild(el("div", { class: "search-dropdown-empty" }, "No matches."));
+      host.style.display = "";
+      return;
+    }
+    matches.forEach((m) => {
+      const label = mode === "asset" ? `${m.AssetName || m.id} — ${m.id}` : m.FullName || `${m.FirstName || ""} ${m.LastName || ""}`.trim();
+      const row = el("div", { class: "search-dropdown-item" }, label);
+      row.addEventListener("click", () => selectItem(m));
+      host.appendChild(row);
+    });
+    host.style.display = "";
+  }
+
+  document.getElementById("search-input").addEventListener(
+    "input",
+    debounce((e) => renderResults(e.target.value.trim()), 120)
+  );
+
+  function selectItem(item) {
+    selected = item;
+    document.getElementById("search-results").style.display = "none";
+    document.getElementById("search-input").value = mode === "asset" ? `${item.AssetName || item.id} — ${item.id}` : item.FullName;
+
+    const summary = document.getElementById("selected-summary");
+    summary.style.display = "";
+    summary.textContent =
+      mode === "asset"
+        ? `${item.AssetName || item.id} (${item.id}) — ${item.AssetType || ""} · Status: ${item.Status || "Unknown"}`
+        : `${item.FullName} — ${item.JobTitle || ""} ${item.Department ? "· " + item.Department : ""}`;
+
+    renderHistory();
+  }
+
+  function renderHistory() {
+    const card = document.getElementById("history-card");
+    const title = document.getElementById("history-title");
+    const rows = document.getElementById("history-rows");
+    const empty = document.getElementById("history-empty");
+    card.style.display = "";
+    rows.innerHTML = "";
+
+    let entries;
+    if (mode === "asset") {
+      title.textContent = `Audit History — ${selected.AssetName || selected.id}`;
+      entries = auditLog.filter((e) => e.assetId === selected.id || (e.recordType === "Asset" && e.recordId === selected.id));
+    } else {
+      title.textContent = `Audit History — ${selected.FullName}`;
+      entries = auditLog.filter((e) => Array.isArray(e.employeeIds) && e.employeeIds.includes(selected.id));
+    }
+    entries = entries.slice().sort((a, b) => new Date(b.timestampClient || 0) - new Date(a.timestampClient || 0));
+
+    if (entries.length === 0) {
+      empty.style.display = "";
+      return;
+    }
+    empty.style.display = "none";
+    entries.forEach((entry) => {
+      rows.appendChild(
+        el("tr", {}, [
+          el("td", {}, formatDateOnly(entry.timestampClient)),
+          el("td", {}, formatTimeOnly(entry.timestampClient)),
+          el("td", {}, entry.performedByName || "Unknown"),
+          el("td", {}, entry.description || `${entry.action || ""} — ${entry.recordType || ""}`),
+        ])
+      );
+    });
+  }
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#search-results") && e.target.id !== "search-input") {
+      document.getElementById("search-results").style.display = "none";
+    }
+  });
+
+  init();
+</script>
+</body>
+</html>
