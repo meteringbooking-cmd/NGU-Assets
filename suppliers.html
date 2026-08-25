@@ -1,0 +1,220 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Supplier Register · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+</head>
+<body>
+<script>
+  if (location.protocol === "file:") {
+    document.addEventListener("DOMContentLoaded", function () {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 16px;font:600 13px -apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;";
+      b.textContent = "This app must be opened through a local web server, not by double-clicking the file. Double-click start-local-server.bat in this folder, then open the page it launches. See README.md for details.";
+      document.body.insertBefore(b, document.body.firstChild);
+    });
+  }
+</script>
+<div id="page-content">
+  <div class="page-toolbar">
+    <input type="search" class="search-input" id="search-input" placeholder="Search by name, contact, town…" />
+    <div style="display:flex; gap:10px; align-items:center;">
+      <label class="field checkbox-row" style="margin:0;">
+        <input type="checkbox" id="show-inactive" />
+        <span>Show inactive</span>
+      </label>
+      <button class="btn btn-primary" id="add-supplier-btn">+ Add Supplier</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Supplier ID</th>
+          <th>Name</th>
+          <th>Town / City</th>
+          <th>Services</th>
+          <th>Approved</th>
+          <th>Preferred</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody id="supplier-rows">
+        <tr class="loading-row"><td colspan="7">Loading suppliers…</td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+  import { db } from "./shared/firebase-config.js";
+  import { COLLECTIONS } from "./shared/collections.js";
+  import { initLayout, el, $, toast, debounce, nextId, logAudit, fetchAll, openModal, closeModal, getActingAs, nowISO } from "./shared/common.js";
+  import { doc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  initLayout("suppliers", "Supplier Register");
+
+  const COUNTRIES = ["United Kingdom", "Ireland", "United States", "Other"];
+  let allSuppliers = [];
+
+  async function loadSuppliers() {
+    const tbody = document.getElementById("supplier-rows");
+    tbody.innerHTML = `<tr class="loading-row"><td colspan="7">Loading suppliers…</td></tr>`;
+    allSuppliers = await fetchAll(COLLECTIONS.SUPPLIER_REGISTER);
+    allSuppliers.sort((a, b) => (a.SupplierName || "").localeCompare(b.SupplierName || ""));
+    renderRows();
+  }
+
+  function yesNo(v) {
+    return el("span", { class: `badge ${v ? "badge-green" : "badge-slate"}` }, v ? "Yes" : "No");
+  }
+
+  function serviceTags(s) {
+    const tags = [];
+    if (s.CalibrationProvidor) tags.push("Calibration");
+    if (s.RepairProvider) tags.push("Repair");
+    if (s.EquipmentSupplier) tags.push("Equipment");
+    if (s.Manufacturer) tags.push("Manufacturer");
+    return tags.length ? tags.join(", ") : "—";
+  }
+
+  function renderRows() {
+    const tbody = document.getElementById("supplier-rows");
+    const term = ($("#search-input").value || "").toLowerCase();
+    const showInactive = $("#show-inactive").checked;
+    tbody.innerHTML = "";
+    const rows = allSuppliers.filter((s) => {
+      if (!showInactive && s.Active === false) return false;
+      if (!term) return true;
+      return [s.SupplierName, s.TradingName, s.ContactName, s.TownCity].join(" ").toLowerCase().includes(term);
+    });
+    if (rows.length === 0) {
+      tbody.appendChild(el("tr", { class: "static-row" }, el("td", { colspan: "7", class: "empty-state" }, "No suppliers found.")));
+      return;
+    }
+    rows.forEach((s) => {
+      tbody.appendChild(
+        el("tr", { onclick: () => openSupplierForm(s) }, [
+          el("td", {}, s.id),
+          el("td", {}, s.SupplierName + (s.TradingName ? ` (${s.TradingName})` : "")),
+          el("td", {}, s.TownCity || "—"),
+          el("td", {}, serviceTags(s)),
+          el("td", {}, yesNo(s.ApprovedSupplier)),
+          el("td", {}, yesNo(s.PreferredSupplier)),
+          el("td", {}, el("span", { class: `badge ${s.Active === false ? "badge-slate" : "badge-green"}` }, s.Active === false ? "Inactive" : "Active")),
+        ])
+      );
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", debounce(renderRows, 150));
+  document.getElementById("show-inactive").addEventListener("change", renderRows);
+  document.getElementById("add-supplier-btn").addEventListener("click", () => openSupplierForm(null));
+
+  function openSupplierForm(existing) {
+    const form = el("form", { class: "field-grid" });
+    form.innerHTML = `
+      <div class="form-section-heading">Supplier Information</div>
+      <div class="field"><label>Supplier Name *</label><input name="SupplierName" required maxlength="100" /></div>
+      <div class="field"><label>Trading Name</label><input name="TradingName" maxlength="100" /></div>
+      <div class="field checkbox-row"><input type="checkbox" name="ApprovedSupplier" id="chk-approved" /><label for="chk-approved">Approved Supplier</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="Active" id="chk-active" /><label for="chk-active">Active</label></div>
+
+      <div class="form-section-heading">Contact Information</div>
+      <div class="field"><label>Contact Name *</label><input name="ContactName" required /></div>
+      <div class="field"><label>Email Address *</label><input type="email" name="EmailAddress" required /></div>
+      <div class="field"><label>Telephone *</label><input name="Telephone" required /></div>
+      <div class="field"><label>Website</label><input name="Website" placeholder="www.example.com" /></div>
+
+      <div class="form-section-heading">Address Information</div>
+      <div class="field"><label>Address Line 1 *</label><input name="AddressLine1" required /></div>
+      <div class="field"><label>Address Line 2</label><input name="AddressLine2" /></div>
+      <div class="field"><label>Town / City *</label><input name="TownCity" required /></div>
+      <div class="field"><label>County</label><input name="County" /></div>
+      <div class="field"><label>Postcode *</label><input name="Postcode" required /></div>
+      <div class="field">
+        <label>Country *</label>
+        <select name="Country" required>${COUNTRIES.map((c) => `<option value="${c}">${c}</option>`).join("")}</select>
+      </div>
+
+      <div class="form-section-heading">Services</div>
+      <div class="field checkbox-row"><input type="checkbox" name="CalibrationProvidor" id="chk-cal" /><label for="chk-cal">Calibration Provider</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="RepairProvider" id="chk-rep" /><label for="chk-rep">Repair Provider</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="EquipmentSupplier" id="chk-equip" /><label for="chk-equip">Equipment Supplier</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="Manufacturer" id="chk-mfr" /><label for="chk-mfr">Manufacturer</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="PreferredSupplier" id="chk-pref" /><label for="chk-pref">Preferred Supplier</label></div>
+
+      <div class="form-actions" style="grid-column: 1/-1;">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">${existing ? "Save Changes" : "Create Supplier"}</button>
+      </div>
+    `;
+
+    if (existing) {
+      Object.entries(existing).forEach(([k, v]) => {
+        const input = form.querySelector(`[name="${k}"]`);
+        if (!input) return;
+        if (input.type === "checkbox") input.checked = !!v;
+        else input.value = v ?? "";
+      });
+    } else {
+      form.querySelector('[name="Active"]').checked = true;
+      form.querySelector('[name="Country"]').value = "United Kingdom";
+    }
+
+    const panel = openModal(existing ? `Edit Supplier — ${existing.SupplierName}` : "Add Supplier", form, { wide: true });
+    panel.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const data = {
+        SupplierName: fd.get("SupplierName"),
+        TradingName: fd.get("TradingName") || null,
+        ApprovedSupplier: form.querySelector('[name="ApprovedSupplier"]').checked,
+        Active: form.querySelector('[name="Active"]').checked,
+        ContactName: fd.get("ContactName"),
+        EmailAddress: fd.get("EmailAddress"),
+        Telephone: fd.get("Telephone"),
+        Website: fd.get("Website") || null,
+        AddressLine1: fd.get("AddressLine1"),
+        AddressLine2: fd.get("AddressLine2") || null,
+        TownCity: fd.get("TownCity"),
+        County: fd.get("County") || null,
+        Postcode: fd.get("Postcode"),
+        Country: fd.get("Country"),
+        CalibrationProvidor: form.querySelector('[name="CalibrationProvidor"]').checked,
+        RepairProvider: form.querySelector('[name="RepairProvider"]').checked,
+        EquipmentSupplier: form.querySelector('[name="EquipmentSupplier"]').checked,
+        Manufacturer: form.querySelector('[name="Manufacturer"]').checked,
+        PreferredSupplier: form.querySelector('[name="PreferredSupplier"]').checked,
+      };
+      try {
+        if (existing) {
+          await updateDoc(doc(db, COLLECTIONS.SUPPLIER_REGISTER, existing.id), data);
+          await logAudit({ recordType: "Supplier", recordId: existing.id, action: "Update", description: `Updated supplier ${data.SupplierName}` });
+          toast("Supplier updated", "success");
+        } else {
+          const id = await nextId("SUP", 3);
+          data.CreatedDate = nowISO();
+          data.CreatedBy = getActingAs().name || "Unknown";
+          await setDoc(doc(db, COLLECTIONS.SUPPLIER_REGISTER, id), data);
+          await logAudit({ recordType: "Supplier", recordId: id, action: "Create", description: `Created supplier ${data.SupplierName}` });
+          toast("Supplier created", "success");
+        }
+        closeModal();
+        loadSuppliers();
+      } catch (err) {
+        console.error(err);
+        toast("Could not save supplier: " + err.message, "error");
+      }
+    });
+  }
+
+  loadSuppliers();
+</script>
+</body>
+</html>

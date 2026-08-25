@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Location Register · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+</head>
+<body>
+<script>
+  if (location.protocol === "file:") {
+    document.addEventListener("DOMContentLoaded", function () {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 16px;font:600 13px -apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;";
+      b.textContent = "This app must be opened through a local web server, not by double-clicking the file. Double-click start-local-server.bat in this folder, then open the page it launches. See README.md for details.";
+      document.body.insertBefore(b, document.body.firstChild);
+    });
+  }
+</script>
+<div id="page-content">
+  <div class="page-toolbar">
+    <input type="search" class="search-input" id="search-input" placeholder="Search locations…" />
+    <div style="display:flex; gap:10px; align-items:center;">
+      <label class="field checkbox-row" style="margin:0;"><input type="checkbox" id="show-inactive" /><span>Show inactive</span></label>
+      <button class="btn btn-primary" id="add-btn">+ Add Location</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <table class="data-table">
+      <thead>
+        <tr><th>ID</th><th>Name</th><th>Code</th><th>Type</th><th>Parent</th><th>Default</th><th>Status</th></tr>
+      </thead>
+      <tbody id="rows"><tr class="loading-row"><td colspan="7">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+  import { db } from "./shared/firebase-config.js";
+  import { COLLECTIONS } from "./shared/collections.js";
+  import { initLayout, el, $, toast, debounce, nextId, logAudit, fetchAll, openModal, closeModal, getActingAs, nowISO } from "./shared/common.js";
+  import { doc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  initLayout("locations", "Location Register");
+
+  const REFERENCE_SOURCES = ["Internal", "Employee", "Supplier"];
+
+  let allLocations = [];
+  let allTypes = [];
+  let allEmployees = [];
+  let allSuppliers = [];
+
+  async function loadAll() {
+    document.getElementById("rows").innerHTML = `<tr class="loading-row"><td colspan="7">Loading…</td></tr>`;
+    [allLocations, allTypes, allEmployees, allSuppliers] = await Promise.all([
+      fetchAll(COLLECTIONS.LOCATION_REGISTER),
+      fetchAll(COLLECTIONS.LOCATION_TYPES, { activeOnly: true }),
+      fetchAll(COLLECTIONS.EMPLOYEE_REGISTER),
+      fetchAll(COLLECTIONS.SUPPLIER_REGISTER),
+    ]);
+    allLocations.sort((a, b) => (a.LocationName || "").localeCompare(b.LocationName || ""));
+    render();
+  }
+
+  function locationName(id) {
+    const l = allLocations.find((x) => x.id === id);
+    return l ? l.LocationName : "—";
+  }
+
+  function render() {
+    const tbody = document.getElementById("rows");
+    const term = ($("#search-input").value || "").toLowerCase();
+    const showInactive = $("#show-inactive").checked;
+    tbody.innerHTML = "";
+    const rows = allLocations.filter((r) => {
+      if (!showInactive && r.Active === false) return false;
+      if (!term) return true;
+      return [r.LocationName, r.LocationCode, r.LocationType].join(" ").toLowerCase().includes(term);
+    });
+    if (rows.length === 0) {
+      tbody.appendChild(el("tr", { class: "static-row" }, el("td", { colspan: "7", class: "empty-state" }, "No locations yet — add your first depot, region, or provider location.")));
+      return;
+    }
+    rows.forEach((r) => {
+      tbody.appendChild(
+        el("tr", { onclick: () => openForm(r) }, [
+          el("td", {}, r.id),
+          el("td", {}, r.LocationName),
+          el("td", {}, r.LocationCode || "—"),
+          el("td", {}, r.LocationType || "—"),
+          el("td", {}, r.ParentLocation ? locationName(r.ParentLocation) : "—"),
+          el("td", {}, r.DefaultLocation ? el("span", { class: "badge badge-teal" }, "Default") : "—"),
+          el("td", {}, el("span", { class: `badge ${r.Active === false ? "badge-slate" : "badge-green"}` }, r.Active === false ? "Inactive" : "Active")),
+        ])
+      );
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", debounce(render, 150));
+  document.getElementById("show-inactive").addEventListener("change", render);
+  document.getElementById("add-btn").addEventListener("click", () => openForm(null));
+
+  function referenceOptionsFor(source) {
+    if (source === "Employee") return allEmployees.map((e) => ({ value: e.id, label: e.FullName }));
+    if (source === "Supplier") return allSuppliers.map((s) => ({ value: s.id, label: s.SupplierName }));
+    return [];
+  }
+
+  function openForm(existing) {
+    if (allTypes.length === 0) {
+      toast("Add at least one Location Type first.", "info");
+      return;
+    }
+    const form = el("form", { class: "field-grid" });
+    form.innerHTML = `
+      <div class="form-section-heading">Location Information</div>
+      <div class="field"><label>Location Name *</label><input name="LocationName" required maxlength="100" /></div>
+      <div class="field"><label>Location Code *</label><input name="LocationCode" required maxlength="10" placeholder="e.g. SCT" /></div>
+      <div class="field">
+        <label>Location Type *</label>
+        <select name="LocationType" required>
+          <option value="">Select…</option>
+          ${allTypes.map((t) => `<option value="${t.LocationTypeName}">${t.LocationTypeName}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field checkbox-row"><input type="checkbox" name="Active" id="chk-active" /><label for="chk-active">Active</label></div>
+
+      <div class="form-section-heading">Location Reference</div>
+      <div class="field">
+        <label>Reference Source *</label>
+        <select name="ReferenceSource" required>${REFERENCE_SOURCES.map((s) => `<option value="${s}">${s}</option>`).join("")}</select>
+        <span class="hint">What this location represents</span>
+      </div>
+      <div class="field" id="reference-record-field">
+        <label>Reference Record</label>
+        <select name="ReferenceRecord"><option value="">None</option></select>
+      </div>
+
+      <div class="form-section-heading">Location Management</div>
+      <div class="field">
+        <label>Parent Location</label>
+        <select name="ParentLocation">
+          <option value="">None</option>
+          ${allLocations.filter((l) => l.id !== existing?.id).map((l) => `<option value="${l.id}">${l.LocationName}</option>`).join("")}
+        </select>
+      </div>
+      <div class="field checkbox-row"><input type="checkbox" name="DefaultLocation" id="chk-default" /><label for="chk-default">Default Location</label></div>
+      <div class="field span-2"><label>Notes</label><textarea name="Notes" maxlength="500"></textarea></div>
+
+      <div class="form-actions" style="grid-column:1/-1;">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">${existing ? "Save Changes" : "Create Location"}</button>
+      </div>
+    `;
+
+    const sourceSelect = form.querySelector('[name="ReferenceSource"]');
+    const refSelect = form.querySelector('[name="ReferenceRecord"]');
+    function refreshReferenceOptions(selectedValue) {
+      const opts = referenceOptionsFor(sourceSelect.value);
+      refSelect.innerHTML = '<option value="">None</option>' + opts.map((o) => `<option value="${o.value}">${o.label}</option>`).join("");
+      if (selectedValue) refSelect.value = selectedValue;
+    }
+    sourceSelect.addEventListener("change", () => refreshReferenceOptions(null));
+
+    if (existing) {
+      Object.entries(existing).forEach(([k, v]) => {
+        const input = form.querySelector(`[name="${k}"]`);
+        if (!input) return;
+        if (input.type === "checkbox") input.checked = !!v;
+        else input.value = v ?? "";
+      });
+      refreshReferenceOptions(existing.ReferenceRecord);
+    } else {
+      form.querySelector('[name="Active"]').checked = true;
+      form.querySelector('[name="ReferenceSource"]').value = "Internal";
+      refreshReferenceOptions(null);
+    }
+
+    const panel = openModal(existing ? `Edit Location — ${existing.LocationName}` : "Add Location", form, { wide: true });
+    panel.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const data = {
+        LocationName: fd.get("LocationName"),
+        LocationCode: fd.get("LocationCode"),
+        LocationType: fd.get("LocationType"),
+        Active: form.querySelector('[name="Active"]').checked,
+        ReferenceSource: fd.get("ReferenceSource"),
+        ReferenceRecord: fd.get("ReferenceRecord") || null,
+        ParentLocation: fd.get("ParentLocation") || null,
+        DefaultLocation: form.querySelector('[name="DefaultLocation"]').checked,
+        Notes: fd.get("Notes") || null,
+      };
+      try {
+        if (existing) {
+          await updateDoc(doc(db, COLLECTIONS.LOCATION_REGISTER, existing.id), data);
+          await logAudit({ recordType: "Location", recordId: existing.id, action: "Update", description: `Updated location ${data.LocationName}` });
+          toast("Location updated", "success");
+        } else {
+          const id = await nextId("LOC", 4);
+          data.CreatedDate = nowISO();
+          data.CreatedBy = getActingAs().name || "Unknown";
+          await setDoc(doc(db, COLLECTIONS.LOCATION_REGISTER, id), data);
+          await logAudit({ recordType: "Location", recordId: id, action: "Create", description: `Created location ${data.LocationName}` });
+          toast("Location created", "success");
+        }
+        closeModal();
+        loadAll();
+      } catch (err) {
+        toast("Could not save location: " + err.message, "error");
+      }
+    });
+  }
+
+  loadAll();
+</script>
+</body>
+</html>
