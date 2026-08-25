@@ -419,14 +419,20 @@
         actions.push({ label: "Transfer Asset", href: `transfer-asset.html?employee=${encodeURIComponent(asset.CurrentEmployee)}&asset=${encodeURIComponent(asset.id)}` });
         actions.push({ label: "Receive Returned Asset", href: `return-asset.html?employee=${encodeURIComponent(asset.CurrentEmployee)}&asset=${encodeURIComponent(asset.id)}` });
       }
+
+      if (asset.Status === "Under Repair") {
+        actions.push({ label: "Continue Repair Job", href: `repair.html?asset=${encodeURIComponent(asset.id)}` });
+      } else if (asset.Status === "Away for Calibration") {
+        actions.push({ label: "Complete Calibration", href: `calibration.html?asset=${encodeURIComponent(asset.id)}` });
+      } else if (asset.Status === "Available" || asset.Status === "Assigned") {
+        const type = types.find((t) => t.AssetTypeName === asset.AssetType);
+        if (!type || type.CalibrationRequired !== false) {
+          actions.push({ label: "Start Calibration", href: `calibration.html?asset=${encodeURIComponent(asset.id)}` });
+        }
+      }
     }
 
-    actions.push(
-      { label: "Report Damage / Missing / Stolen", soon: true },
-      { label: "Start Calibration", soon: true },
-      { label: "Repair Asset", soon: true },
-      { label: "Retire Asset", soon: true }
-    );
+    actions.push({ label: "Report Damage / Missing / Stolen", soon: true }, { label: "Retire Asset", soon: true });
 
     actions.forEach((a) => {
       const btn = el("a", { class: "btn btn-secondary", href: a.href || "#", style: "justify-content:flex-start;" }, a.label);
