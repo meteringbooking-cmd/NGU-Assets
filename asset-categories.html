@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Asset Categories · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+</head>
+<body>
+<script>
+  if (location.protocol === "file:") {
+    document.addEventListener("DOMContentLoaded", function () {
+      var b = document.createElement("div");
+      b.style.cssText = "position:fixed;top:0;left:0;right:0;z-index:9999;background:#dc2626;color:#fff;padding:10px 16px;font:600 13px -apple-system,'Segoe UI',Roboto,sans-serif;text-align:center;";
+      b.textContent = "This app must be opened through a local web server, not by double-clicking the file. Double-click start-local-server.bat in this folder, then open the page it launches. See README.md for details.";
+      document.body.insertBefore(b, document.body.firstChild);
+    });
+  }
+</script>
+<div id="page-content">
+  <div class="page-toolbar">
+    <input type="search" class="search-input" id="search-input" placeholder="Search asset categories…" />
+    <button class="btn btn-primary" id="add-btn">+ Add Category</button>
+  </div>
+
+  <div class="card">
+    <table class="data-table">
+      <thead><tr><th>ID</th><th>Name</th><th>Description</th><th>Calibration</th><th>Repairable</th><th>Status</th></tr></thead>
+      <tbody id="rows"><tr class="loading-row"><td colspan="6">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script type="module">
+  import { db } from "./shared/firebase-config.js";
+  import { COLLECTIONS } from "./shared/collections.js";
+  import { initLayout, el, $, toast, debounce, nextId, logAudit, fetchAll, openModal, closeModal, getActingAs, nowISO } from "./shared/common.js";
+  import { doc, setDoc, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+  initLayout("asset-categories", "Asset Categories");
+
+  const CAL_UNITS = ["Days", "Months", "Years"];
+  let all = [];
+
+  async function load() {
+    document.getElementById("rows").innerHTML = `<tr class="loading-row"><td colspan="6">Loading…</td></tr>`;
+    all = await fetchAll(COLLECTIONS.ASSET_CATEGORIES);
+    all.sort((a, b) => (a.AssetCategoryName || "").localeCompare(b.AssetCategoryName || ""));
+    render();
+  }
+
+  function calibrationSummary(r) {
+    if (r.CalibrationRequired === false || r.CalibrationRequired === undefined) return "No";
+    return `Every ${r.CalibrationInterval || "?"} ${r.CalibrationUnit || ""}`;
+  }
+
+  function yesNo(v) {
+    return el("span", { class: `badge ${v ? "badge-green" : "badge-slate"}` }, v ? "Yes" : "No");
+  }
+
+  function render() {
+    const tbody = document.getElementById("rows");
+    const term = ($("#search-input").value || "").toLowerCase();
+    tbody.innerHTML = "";
+    const rows = all.filter((r) => !term || (r.AssetCategoryName || "").toLowerCase().includes(term));
+    if (rows.length === 0) {
+      tbody.appendChild(el("tr", { class: "static-row" }, el("td", { colspan: "6", class: "empty-state" }, "No asset categories yet.")));
+      return;
+    }
+    rows.forEach((r) => {
+      tbody.appendChild(
+        el("tr", { onclick: () => openForm(r) }, [
+          el("td", {}, r.id),
+          el("td", {}, r.AssetCategoryName),
+          el("td", {}, r.Description || "—"),
+          el("td", {}, calibrationSummary(r)),
+          el("td", {}, yesNo(r.Repairable !== false)),
+          el("td", {}, el("span", { class: `badge ${r.Active === false ? "badge-slate" : "badge-green"}` }, r.Active === false ? "Inactive" : "Active")),
+        ])
+      );
+    });
+  }
+
+  document.getElementById("search-input").addEventListener("input", debounce(render, 150));
+  document.getElementById("add-btn").addEventListener("click", () => openForm(null));
+
+  function openForm(existing) {
+    const form = el("form", { class: "field-grid" });
+    form.innerHTML = `
+      <div class="field span-2"><label>Asset Category Name *</label><input name="AssetCategoryName" required maxlength="100" placeholder="e.g. Mobile Phone, Laptop, Test Equipment" /></div>
+      <div class="field span-2"><label>Description *</label><textarea name="Description" required maxlength="500"></textarea></div>
+      <div class="field checkbox-row"><input type="checkbox" name="Active" id="chk-active" /><label for="chk-active">Active</label></div>
+
+      <div class="form-section-heading">Asset Rules</div>
+      <p class="muted" style="grid-column:1/-1; margin:0 0 4px;">These rules apply to every asset created under this category.</p>
+      <div class="field checkbox-row"><input type="checkbox" name="CalibrationRequired" id="chk-cal-req" /><label for="chk-cal-req">Calibration Required</label></div>
+      <div class="field checkbox-row"><input type="checkbox" name="Repairable" id="chk-repairable" /><label for="chk-repairable">Repairable</label></div>
+      <div class="field" id="cal-interval-field" hidden><label>Calibration Interval *</label><input type="number" name="CalibrationInterval" min="1" value="12" /></div>
+      <div class="field" id="cal-unit-field" hidden>
+        <label>Calibration Unit *</label>
+        <select name="CalibrationUnit">${CAL_UNITS.map((u) => `<option value="${u}">${u}</option>`).join("")}</select>
+      </div>
+
+      <div class="form-actions" style="grid-column:1/-1;">
+        <button type="button" class="btn btn-secondary" data-close>Cancel</button>
+        <button type="submit" class="btn btn-primary">${existing ? "Save Changes" : "Create"}</button>
+      </div>
+    `;
+
+    const calReqCheckbox = form.querySelector('[name="CalibrationRequired"]');
+    const calIntervalField = form.querySelector("#cal-interval-field");
+    const calUnitField = form.querySelector("#cal-unit-field");
+    function refreshCalibrationVisibility() {
+      const needed = calReqCheckbox.checked;
+      calIntervalField.hidden = !needed;
+      calUnitField.hidden = !needed;
+      form.querySelector('[name="CalibrationInterval"]').required = needed;
+    }
+    calReqCheckbox.addEventListener("change", refreshCalibrationVisibility);
+
+    if (existing) {
+      form.querySelector('[name="AssetCategoryName"]').value = existing.AssetCategoryName || "";
+      form.querySelector('[name="Description"]').value = existing.Description || "";
+      form.querySelector('[name="Active"]').checked = existing.Active !== false;
+      calReqCheckbox.checked = !!existing.CalibrationRequired;
+      form.querySelector('[name="Repairable"]').checked = existing.Repairable !== false;
+      if (existing.CalibrationInterval) form.querySelector('[name="CalibrationInterval"]').value = existing.CalibrationInterval;
+      if (existing.CalibrationUnit) form.querySelector('[name="CalibrationUnit"]').value = existing.CalibrationUnit;
+    } else {
+      form.querySelector('[name="Active"]').checked = true;
+      form.querySelector('[name="Repairable"]').checked = true;
+      form.querySelector('[name="CalibrationUnit"]').value = "Months";
+    }
+    refreshCalibrationVisibility();
+
+    const panel = openModal(existing ? `Edit Category — ${existing.AssetCategoryName}` : "Add Asset Category", form, { wide: true });
+    panel.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", closeModal));
+
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fd = new FormData(form);
+      const calibrationRequired = form.querySelector('[name="CalibrationRequired"]').checked;
+      const data = {
+        AssetCategoryName: fd.get("AssetCategoryName"),
+        Description: fd.get("Description"),
+        Active: form.querySelector('[name="Active"]').checked,
+        CalibrationRequired: calibrationRequired,
+        Repairable: form.querySelector('[name="Repairable"]').checked,
+        CalibrationInterval: calibrationRequired ? Number(fd.get("CalibrationInterval")) : null,
+        CalibrationUnit: calibrationRequired ? fd.get("CalibrationUnit") : null,
+      };
+      try {
+        if (existing) {
+          await updateDoc(doc(db, COLLECTIONS.ASSET_CATEGORIES, existing.id), data);
+          await logAudit({ recordType: "AssetCategory", recordId: existing.id, action: "Update", description: `Updated category ${data.AssetCategoryName}` });
+          toast("Category updated", "success");
+        } else {
+          const id = await nextId("CAT", 4);
+          data.CreatedDate = nowISO();
+          data.CreatedBy = getActingAs().name || "Unknown";
+          await setDoc(doc(db, COLLECTIONS.ASSET_CATEGORIES, id), data);
+          await logAudit({ recordType: "AssetCategory", recordId: id, action: "Create", description: `Created category ${data.AssetCategoryName}` });
+          toast("Category created", "success");
+        }
+        closeModal();
+        load();
+      } catch (err) {
+        toast("Could not save: " + err.message, "error");
+      }
+    });
+  }
+
+  load();
+</script>
+</body>
+</html>
