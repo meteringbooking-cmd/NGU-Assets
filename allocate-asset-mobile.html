@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>Mobile Allocate · Asset Tracking</title>
+<link rel="stylesheet" href="shared/styles.css" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html5-qrcode/2.3.8/html5-qrcode.min.js"></script>
+<style>
+  /* Standalone mobile layout — no sidebar/topbar, single column, big touch targets. */
+  body { background: var(--steel-50); }
+  .m-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 14px 16px; background: var(--ink-950); color: #fff;
+    position: sticky; top: 0; z-index: 40;
+  }
+  .m-brand { font-family: "Oswald", sans-serif; font-weight: 600; letter-spacing: 0.03em; font-size: 14px; text-transform: uppercase; }
+  .m-brand small { display: block; font-family: "Inter", sans-serif; font-weight: 500; text-transform: none; letter-spacing: 0; color: var(--steel-300); font-size: 11px; margin-top: 1px; }
+  .m-link { font-size: 12.5px; color: var(--steel-200); text-decoration: none; border: 1px solid var(--steel-700); border-radius: 6px; padding: 6px 10px; }
+  .m-wrap { max-width: 520px; margin: 0 auto; padding: 16px 14px 40px; }
+  .m-step { background: var(--white); border: 1px solid var(--steel-200); border-radius: 10px; padding: 16px; margin-bottom: 14px; box-shadow: var(--shadow); }
+  .m-step-title { font-family: "Oswald", sans-serif; font-weight: 600; font-size: 12.5px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--steel-500); margin-bottom: 10px; }
+  .m-field { position: relative; margin-bottom: 4px; }
+  .m-input {
+    width: 100%; border: 1px solid var(--steel-300); border-radius: 8px; padding: 13px 12px;
+    font-size: 16px; /* 16px avoids iOS auto-zoom on focus */ font-family: inherit;
+  }
+  .m-btn {
+    display: block; width: 100%; text-align: center; border: none; border-radius: 8px;
+    padding: 15px; font-size: 15px; font-weight: 600; cursor: pointer; font-family: inherit;
+  }
+  .m-btn-primary { background: var(--orange-600); color: #fff; }
+  .m-btn-primary:disabled { background: var(--steel-300); color: var(--steel-500); }
+  .m-btn-secondary { background: var(--steel-100); color: var(--ink-900); }
+  .m-summary { font-size: 13px; color: var(--steel-500); margin-top: 8px; }
+  .m-queue-item {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 10px 0; border-bottom: 1px solid var(--steel-100); font-size: 14px;
+  }
+  .m-queue-item:last-child { border-bottom: none; }
+  .m-queue-name { font-weight: 600; }
+  .m-queue-meta { font-size: 12px; color: var(--steel-500); margin-top: 1px; }
+  .m-queue-remove { background: none; border: none; color: var(--red-600); font-size: 13px; padding: 6px 4px; cursor: pointer; }
+  .m-scan-video-wrap { position: relative; border-radius: 8px; overflow: hidden; background: #000; margin-bottom: 10px; }
+  #qr-reader { width: 100%; }
+  .m-scan-hint { font-size: 12px; color: var(--steel-500); margin: 6px 0 10px; }
+  .m-empty { font-size: 13px; color: var(--steel-500); padding: 6px 0; }
+  .m-divider-label { text-align: center; font-size: 11.5px; color: var(--steel-300); text-transform: uppercase; letter-spacing: 0.05em; margin: 10px 0; }
+  .m-result { text-align: center; padding: 10px 4px; }
+</style>
+</head>
+<body>
+<div class="m-header">
+  <div class="m-brand">Mobile Allocate<small>Asset Tracking</small></div>
+  <a class="m-link" href="allocate-asset.html">Full site</a>
+</div>
+
+<div class="m-wrap">
+  <div class="m-step" id="step-employee">
+    <div class="m-step-title">1 · Employee</div>
+    <div class="m-field">
+      <input type="text" id="employee-search-input" class="m-input" autocomplete="off" placeholder="Type an employee name…" />
+      <div id="employee-search-results" class="search-dropdown" style="display:none;"></div>
+    </div>
+    <div class="m-summary" id="employee-summary"></div>
+  </div>
+
+  <div class="m-step" id="step-assets" style="display:none;">
+    <div class="m-step-title">2 · Assets</div>
+
+    <button type="button" class="m-btn m-btn-secondary" id="scan-toggle-btn">📷 Scan QR Code</button>
+    <div id="scan-video-wrap" class="m-scan-video-wrap" style="display:none; margin-top:10px;">
+      <div id="qr-reader"></div>
+    </div>
+    <div class="m-scan-hint" id="camera-hint"></div>
+
+    <div class="m-divider-label">or</div>
+
+    <div class="m-field">
+      <input type="text" id="scan-input" class="m-input" autocomplete="off" placeholder="Type Asset ID / QR code…" />
+      <div id="asset-search-results" class="search-dropdown" style="display:none;"></div>
+    </div>
+
+    <div id="queue-list" style="margin-top:10px;"></div>
+    <div class="m-empty" id="queue-empty">No assets added yet.</div>
+  </div>
+
+  <div class="m-step" id="step-signature" style="display:none;">
+    <div class="m-step-title">3 · Employee Signature</div>
+    <p class="m-summary" style="margin-top:-4px; margin-bottom:10px;">Hand the phone to the employee to sign below.</p>
+    <div id="signature-host"></div>
+  </div>
+
+  <button type="button" class="m-btn m-btn-primary" id="complete-btn" style="display:none; margin-bottom:14px;">Complete Allocation</button>
+
+  <div class="m-step m-result" id="result-card" style="display:none;">
+    <div id="result-body"></div>
+    <button type="button" class="m-btn m-btn-secondary" id="reset-btn" style="margin-top:14px;">Allocate to Someone Else</button>
+  </div>
+</div>
+
+<script type="module">
+  import { db, storage } from "./shared/firebase-config.js";
+  import { COLLECTIONS } from "./shared/collections.js";
+  import {
+    el, toast, debounce, fetchAll, fetchOne, logAudit, getActingAs, requirePin, nowISO,
+    INELIGIBLE_STATUS_REASONS, findEmployeeLocation, adjustEmployeeAssetCount,
+    recordMovement, createSignaturePad,
+  } from "./shared/common.js";
+  import { doc, addDoc, collection, updateDoc } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+  import { ref, uploadBytes, getDownloadURL } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-storage.js";
+
+  let employees = [];
+  let selectedEmployee = null;
+  let queue = [];
+  let signaturePad = null;
+  let allAssets = [];
+
+  async function init() {
+    employees = (await fetchAll(COLLECTIONS.EMPLOYEE_REGISTER)).filter(
+      (e) => e.EmploymentStatus === "Active" && e.AssetEligible !== false
+    );
+    employees.sort((a, b) => (a.FullName || "").localeCompare(b.FullName || ""));
+    allAssets = await fetchAll(COLLECTIONS.ASSET_REGISTER, { activeOnly: true });
+  }
+
+  /* ---------------- Employee type-ahead ---------------- */
+  function renderEmployeeResults(term) {
+    const host = document.getElementById("employee-search-results");
+    host.innerHTML = "";
+    if (!term) {
+      host.style.display = "none";
+      return;
+    }
+    const t = term.toLowerCase();
+    const matches = employees.filter((e) => (e.FullName || "").toLowerCase().includes(t)).slice(0, 12);
+    if (matches.length === 0) {
+      host.appendChild(el("div", { class: "search-dropdown-empty" }, "No matching employees."));
+      host.style.display = "";
+      return;
+    }
+    matches.forEach((e) => {
+      const row = el("div", { class: "search-dropdown-item" }, `${e.FullName} — ${e.JobTitle || ""}`);
+      row.addEventListener("click", () => selectEmployee(e.id));
+      host.appendChild(row);
+    });
+    host.style.display = "";
+  }
+  document.getElementById("employee-search-input").addEventListener(
+    "input",
+    debounce((e) => renderEmployeeResults(e.target.value.trim()), 120)
+  );
+
+  function selectEmployee(id) {
+    selectedEmployee = employees.find((emp) => emp.id === id) || null;
+    document.getElementById("employee-search-results").style.display = "none";
+    document.getElementById("employee-search-input").value = selectedEmployee ? selectedEmployee.FullName : "";
+    const summary = document.getElementById("employee-summary");
+    if (selectedEmployee) {
+      summary.textContent = `${selectedEmployee.JobTitle || ""} · ${selectedEmployee.Department || ""} · currently holds ${selectedEmployee.CurrentAssetCount ?? 0} asset(s)`;
+      document.getElementById("step-assets").style.display = "";
+    } else {
+      summary.textContent = "";
+      document.getElementById("step-assets").style.display = "none";
+    }
+  }
+
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#employee-search-results") && e.target.id !== "employee-search-input") {
+      document.getElementById("employee-search-results").style.display = "none";
+    }
+    if (!e.target.closest("#asset-search-results") && e.target.id !== "scan-input") {
+      document.getElementById("asset-search-results").style.display = "none";
+    }
+  });
+
+  /* ---------------- Asset lookup / queue ---------------- */
+  async function findAssetByIdentifier(value) {
+    const direct = await fetchOne(COLLECTIONS.ASSET_REGISTER, value);
+    if (direct) return direct;
+    const all = await fetchAll(COLLECTIONS.ASSET_REGISTER);
+    return all.find((a) => a.QRCode === value) || null;
+  }
+
+  async function tryAddAssetToQueue(value) {
+    const asset = await findAssetByIdentifier(value);
+    if (!asset) {
+      toast('Asset Not Found — "This Asset cannot be allocated"', "error");
+      return;
+    }
+    if (asset.StockItem) {
+      toast("Stock items are managed by quantity, not individual allocation.", "info");
+      return;
+    }
+    if (queue.some((a) => a.id === asset.id)) {
+      toast("That asset is already in the allocation list.", "info");
+      return;
+    }
+    if (asset.Status !== "Available") {
+      const reason = INELIGIBLE_STATUS_REASONS[asset.Status] || `Status is "${asset.Status}"`;
+      toast(`Asset Not Eligible for Allocation — ${reason}`, "error");
+      return;
+    }
+    queue.push(asset);
+    renderQueue();
+    if (navigator.vibrate) navigator.vibrate(60);
+  }
+
+  function renderQueue() {
+    const list = document.getElementById("queue-list");
+    const empty = document.getElementById("queue-empty");
+    list.innerHTML = "";
+    if (queue.length === 0) {
+      empty.style.display = "";
+      document.getElementById("step-signature").style.display = "none";
+      document.getElementById("complete-btn").style.display = "none";
+      return;
+    }
+    empty.style.display = "none";
+    queue.forEach((a) => {
+      list.appendChild(
+        el("div", { class: "m-queue-item" }, [
+          el("div", {}, [
+            el("div", { class: "m-queue-name" }, a.AssetName),
+            el("div", { class: "m-queue-meta" }, `${a.id} · ${a.Category || ""}`),
+          ]),
+          el(
+            "button",
+            { type: "button", class: "m-queue-remove", onclick: () => { queue = queue.filter((q) => q.id !== a.id); renderQueue(); } },
+            "Remove"
+          ),
+        ])
+      );
+    });
+    document.getElementById("step-signature").style.display = "";
+    document.getElementById("complete-btn").style.display = "";
+    if (!signaturePad) signaturePad = createSignaturePad(document.getElementById("signature-host"), { width: 480, height: 160 });
+  }
+
+  /* ---------------- Asset type-ahead (manual entry) ---------------- */
+  document.getElementById("scan-input").addEventListener("keydown", async (e) => {
+    if (e.key !== "Enter") return;
+    const value = e.target.value.trim();
+    if (!value) return;
+    e.target.value = "";
+    document.getElementById("asset-search-results").style.display = "none";
+    await tryAddAssetToQueue(value);
+  });
+
+  function renderAssetResults(term) {
+    const host = document.getElementById("asset-search-results");
+    host.innerHTML = "";
+    if (!term) {
+      host.style.display = "none";
+      return;
+    }
+    const t = term.toLowerCase();
+    const matches = allAssets
+      .filter((a) => !a.StockItem && a.Status === "Available" && !queue.some((q) => q.id === a.id))
+      .filter((a) => [a.AssetName, a.id, a.SerialNumber, a.QRCode].filter(Boolean).some((v) => String(v).toLowerCase().includes(t)))
+      .slice(0, 12);
+    if (matches.length === 0) {
+      host.appendChild(el("div", { class: "search-dropdown-empty" }, "No matching available assets."));
+      host.style.display = "";
+      return;
+    }
+    matches.forEach((a) => {
+      const row = el("div", { class: "search-dropdown-item" }, `${a.AssetName} — ${a.id} · ${a.Category || ""}`);
+      row.addEventListener("click", async () => {
+        document.getElementById("scan-input").value = "";
+        host.style.display = "none";
+        await tryAddAssetToQueue(a.id);
+      });
+      host.appendChild(row);
+    });
+    host.style.display = "";
+  }
+  document.getElementById("scan-input").addEventListener(
+    "input",
+    debounce((e) => renderAssetResults(e.target.value.trim()), 120)
+  );
+
+  /* ---------------- Camera QR scanning ---------------- */
+  const scanBtn = document.getElementById("scan-toggle-btn");
+  const videoWrap = document.getElementById("scan-video-wrap");
+  const cameraHint = document.getElementById("camera-hint");
+  let html5QrCode = null;
+  let scanning = false;
+  let lastScanValue = null;
+  let lastScanTime = 0;
+
+  const cameraSupported = window.isSecureContext && !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia) && !!window.Html5Qrcode;
+  if (!cameraSupported) {
+    scanBtn.disabled = true;
+    cameraHint.textContent = window.isSecureContext
+      ? "Camera scanner could not load — check your internet connection, then reload this page."
+      : "Camera scanning needs this page opened over https:// (or as localhost on this computer) — type the Asset ID below instead.";
+  }
+
+  async function onScanSuccess(decodedText) {
+    const value = decodedText.trim();
+    const now = Date.now();
+    if (value === lastScanValue && now - lastScanTime < 2500) return; // ignore rapid repeat fires of the same code
+    lastScanValue = value;
+    lastScanTime = now;
+    await tryAddAssetToQueue(value);
+  }
+
+  async function startScanning() {
+    try {
+      html5QrCode = new Html5Qrcode("qr-reader");
+      await html5QrCode.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 240, height: 240 } },
+        onScanSuccess,
+        () => {} // per-frame "no code found" — ignore
+      );
+      scanning = true;
+      videoWrap.style.display = "";
+      scanBtn.textContent = "⏹ Stop Scanning";
+    } catch (err) {
+      console.error(err);
+      toast("Could not start the camera: " + err.message, "error");
+    }
+  }
+
+  async function stopScanning() {
+    if (html5QrCode && scanning) {
+      try {
+        await html5QrCode.stop();
+        html5QrCode.clear();
+      } catch {
+        /* already stopped */
+      }
+    }
+    scanning = false;
+    videoWrap.style.display = "none";
+    scanBtn.textContent = "📷 Scan QR Code";
+  }
+
+  scanBtn.addEventListener("click", () => (scanning ? stopScanning() : startScanning()));
+  window.addEventListener("pagehide", () => { if (scanning) stopScanning(); });
+
+  /* ---------------- Complete Allocation ---------------- */
+  document.getElementById("complete-btn").addEventListener("click", async () => {
+    if (!selectedEmployee) { toast("Select an employee first.", "error"); return; }
+    if (queue.length === 0) { toast("Add at least one asset first.", "error"); return; }
+    if (!signaturePad || signaturePad.isEmpty()) { toast("Electronic signature is required before allocation can be completed.", "error"); return; }
+    if (!(await requirePin(`Allocate ${queue.length} asset(s) to ${selectedEmployee.FullName}`))) return;
+
+    const btn = document.getElementById("complete-btn");
+    btn.disabled = true;
+    try {
+      if (scanning) await stopScanning();
+
+      const blob = await signaturePad.getBlob();
+      const sigRef = ref(storage, `signatures/allocation_${selectedEmployee.id}_${Date.now()}.png`);
+      await uploadBytes(sigRef, blob);
+      const signatureUrl = await getDownloadURL(sigRef);
+      const signedAt = nowISO();
+      const employeeLocation = await findEmployeeLocation(selectedEmployee.id);
+
+      for (const asset of queue) {
+        await addDoc(collection(db, COLLECTIONS.ASSIGNMENT_HISTORY), {
+          AssetID: asset.id,
+          EmployeeID: selectedEmployee.id,
+          AssignmentType: "Allocation",
+          AssignmentStartDate: signedAt,
+          AssignmentEndDate: null,
+          PreviousEmployeeID: null,
+          ElectronicSignature: signatureUrl,
+          SignatureDateTime: signedAt,
+          CompletedBy: getActingAs().name || "Unknown",
+          Notes: `Allocated to ${selectedEmployee.FullName}`,
+          CreatedDate: signedAt,
+          CreatedBy: getActingAs().name || "Unknown",
+        });
+
+        await updateDoc(doc(db, COLLECTIONS.ASSET_REGISTER, asset.id), {
+          Status: "Assigned",
+          CurrentEmployee: selectedEmployee.id,
+          CurrentLocation: employeeLocation,
+        });
+
+        await recordMovement({
+          assetId: asset.id,
+          action: "Allocated to Employee",
+          toLocation: employeeLocation,
+          notes: `Allocated to ${selectedEmployee.FullName}`,
+        });
+
+        await logAudit({
+          recordType: "Asset",
+          recordId: asset.id,
+          action: "Update",
+          description: `Allocated ${asset.AssetName} (${asset.id}) to ${selectedEmployee.FullName}`,
+          employeeIds: [selectedEmployee.id],
+        });
+      }
+
+      await adjustEmployeeAssetCount(selectedEmployee.id, queue.length);
+
+      document.getElementById("step-employee").style.display = "none";
+      document.getElementById("step-assets").style.display = "none";
+      document.getElementById("step-signature").style.display = "none";
+      btn.style.display = "none";
+
+      document.getElementById("result-card").style.display = "";
+      document.getElementById("result-body").innerHTML = "";
+      document.getElementById("result-body").appendChild(
+        el("div", {}, [
+          el("p", { style: "font-weight:600;" }, `${queue.length} asset(s) allocated to ${selectedEmployee.FullName}.`),
+          ...queue.map((a) => el("div", { class: "m-summary" }, `${a.AssetName} — ${a.id}`)),
+        ])
+      );
+      toast("Allocation complete", "success");
+      queue = [];
+    } catch (err) {
+      console.error(err);
+      toast("Could not complete allocation: " + err.message, "error");
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  document.getElementById("reset-btn").addEventListener("click", () => {
+    selectedEmployee = null;
+    queue = [];
+    signaturePad = null;
+    document.getElementById("employee-search-input").value = "";
+    document.getElementById("employee-summary").textContent = "";
+    document.getElementById("scan-input").value = "";
+    document.getElementById("signature-host").innerHTML = "";
+    document.getElementById("step-employee").style.display = "";
+    document.getElementById("step-assets").style.display = "none";
+    document.getElementById("step-signature").style.display = "none";
+    document.getElementById("complete-btn").style.display = "none";
+    document.getElementById("result-card").style.display = "none";
+    renderQueue();
+    init();
+  });
+
+  init();
+</script>
+</body>
+</html>
